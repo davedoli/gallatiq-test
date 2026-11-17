@@ -15,9 +15,6 @@ from invoice_agent.runner import run_directory, run_path
 
 def main(argv: list[str] | None = None) -> int:
     load_env()
-    logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
-    logging.getLogger("invoice_agent").setLevel(logging.INFO)
-
     parser = argparse.ArgumentParser(description="Process an invoice through extract, validate, approve, and pay.")
     parser.add_argument("--invoice_path", help="Path to one invoice file")
     parser.add_argument("--invoice_dir", help="Path to a folder of invoice files")
@@ -31,6 +28,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--log-dir", default="logs", help="Where JSON audit logs are written")
     parser.add_argument("--verbose", action="store_true", help="Print the full trace for every file in a folder")
     args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
+    if args.verbose:
+        logging.getLogger("invoice_agent").setLevel(logging.INFO)
 
     if not args.invoice_path and not args.invoice_dir:
         parser.error("Pass --invoice_path or --invoice_dir")

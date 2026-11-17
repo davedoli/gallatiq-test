@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import logging
+import warnings
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, List, Optional, TypedDict
 
+import langchain_core  # registers filters that would otherwise surface on import
+from langchain_core._api.deprecation import LangChainPendingDeprecationWarning
+
+warnings.filterwarnings("ignore", category=LangChainPendingDeprecationWarning)
 from langgraph.graph import END, StateGraph
 
 from invoice_agent.db import connect
@@ -20,8 +25,27 @@ from invoice_agent.normalize import canonical_item
 logger = logging.getLogger("invoice_agent")
 
 
-class AgentState(dict):
-    """Plain dict state. LangGraph merges each node's updates."""
+class AgentState(TypedDict, total=False):
+    """One channel per field. LangGraph keeps the fields a node does not return."""
+
+    invoice_path: str
+    raw_text: str
+    source_format: str
+    invoice: Optional[dict]
+    extraction_attempts: int
+    extraction_issues: List[str]
+    extraction_source: str
+    retry_extraction: bool
+    findings: List[dict]
+    decision: str
+    decision_reason: str
+    critique_notes: str
+    validation_narrative: str
+    payment: Optional[dict]
+    trace: List[str]
+    use_llm: bool
+    db_path: str
+    log_path: str
 
 
 def _trace(state: AgentState, message: str) -> list[str]:
@@ -258,7 +282,7 @@ def record(state: AgentState) -> dict:
 
 
 def build_graph():
-    graph = StateGraph(dict)
+    graph = StateGraph(AgentState)
     graph.add_node("load", load)
     graph.add_node("extract", extract)
     graph.add_node("check", check)

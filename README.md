@@ -1,119 +1,53 @@
-# Galatiq Case: Invoice Processing Automation
+# Acme invoice desk
 
-## Background
+A local multi-agent desk that reads a supplier invoice, checks it against inventory, and either records a mock payment or stops with a written reason.
 
-Acme Corp is a PE-backed manufacturing firm losing **$2M/year** on manual invoice processing. Invoices arrive via email as PDFs in messy formats with frequent errors. Staff manually extract data, validate against a legacy inventory database (inconsistent), obtain VP approval (via email chains), and process payment (via a banking API).
+Clean invoices under $10,000 are paid on a local ledger. Stock problems, bad math, unknown items, and anything that looks like fraud are rejected. Price changes, non-USD invoices, totals over $10,000 with no other defect, and a second copy of an invoice already on the ledger are held for a person.
 
-**Current pain points:**
-- 30% error rate
-- 5-day processing delays
-- Frustrated stakeholders
+The original brief is in [CASE.md](CASE.md).
 
-## Objective
-
-Build a **multi-agent system** that automates the end-to-end invoice processing workflow. The system must run as a working prototype — not just designs or slides.
-
-## Workflow
-
-The system should handle four stages:
-
-1. **Ingestion** — Extract structured data from invoice documents (PDFs, text files). Fields include: Vendor, Amount, Items (with quantities), and Due Date. Expect unstructured text, typos, missing data, and potentially fraudulent entries.
-
-2. **Validation** — Verify extracted data against a mock inventory database (SQLite). Flag mismatches such as quantity exceeding available stock or items not found in inventory.
-
-3. **Approval** — Simulate VP-level review with rule-based decision-making (e.g., invoices over $10K require additional scrutiny). The agent should reason through approval/rejection with a reflection or critique loop.
-
-4. **Payment** — If approved, call a mock payment function. If rejected, log the rejection with reasoning.
-
-## Technical Requirements
-
-- **LLM Integration**: Use xAI's Grok as the core reasoning engine (via the xAI API at https://grok.x.ai). Other models are acceptable if you don't have an API key.
-- **Multi-Agent Orchestration**: Use a framework such as LangGraph, CrewAI, AutoGen, or a custom solution.
-- **Agent Capabilities**: Function calling / tool use, structured outputs, and self-correction loops.
-- **Runtime**: Assume no internet for external APIs — simulate everything locally.
-- **Tech Stack**: Python (preferred), with libraries like `langchain`, `crewai`, `autogen`, `pdfplumber`, `PyMuPDF`, etc. Run locally — no cloud deployment.
-
-## Provided Resources
-
-### Mock Invoice Data
-
-Sample invoices are provided in the `data/invoices/` directory in various formats (PDF, CSV, JSON, TXT). Use these as inputs for testing. The data intentionally includes a mix of clean entries and problematic ones — identifying and handling issues is part of the challenge.
-
-### Mock Inventory Database (Required Setup)
-
-Before running the system, you **must** create a local SQLite database that the validation agent will check invoices against. The sample invoices in `data/invoices/` reference specific items and quantities — your database needs to contain matching inventory records so the validation stage can flag mismatches, out-of-stock items, and unknown products.
-
-Below is a starter schema and seed data that covers the core items referenced across the provided invoices:
-
-```python
-import sqlite3
-
-conn = sqlite3.connect('inventory.db')  # Persist to file so all agents can access it
-cursor = conn.cursor()
-
-cursor.execute('CREATE TABLE IF NOT EXISTS inventory (item TEXT PRIMARY KEY, stock INTEGER)')
-cursor.execute("""
-    INSERT INTO inventory VALUES
-    ('WidgetA', 15),
-    ('WidgetB', 10),
-    ('GadgetX', 5),
-    ('FakeItem', 0)
-""")
-conn.commit()
-```
-
-**Why this matters:** The sample invoices are designed to test your validation logic against this database. For example:
-
-| Scenario | Invoice | What should happen |
-|---|---|---|
-| Normal order within stock | INV-1001, INV-1004, INV-1006 | Items found, quantities valid — passes validation |
-| Quantity exceeds stock | INV-1002 (requests 20× GadgetX, only 5 in stock) | Flagged as stock mismatch |
-| Fraudulent / zero-stock item | INV-1003 (references FakeItem, 0 stock) | Flagged as out of stock or suspicious |
-| Item not in database at all | INV-1008 (SuperGizmo, MegaSprocket), INV-1016 (WidgetC) | Flagged as unknown item |
-| Invalid data | INV-1009 (negative quantity) | Flagged as data integrity issue |
-
-You may extend the seed data with additional items or columns (e.g., unit price, category) to support richer validation — the above is the minimum needed to exercise the provided test invoices. If you want your system to also validate pricing or vendor information, consider adding tables for those as well.
-
-### Mock Payment API
-
-```python
-def mock_payment(vendor, amount):
-    print(f"Paid {amount} to {vendor}")
-    return {"status": "success"}
-```
-
-### Grok API Setup
-
-```python
-from xai import Grok
-
-client = Grok(api_key="your_key")
-response = client.chat.completions.create(
-    model="grok-3",
-    messages=[{"role": "user", "content": "Reason about this..."}]
-)
-```
-
-## Running the System
-
-The system should be executable from the command line:
+## Run
 
 ```bash
-python main.py --invoice_path=data/invoices/invoice1.txt
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python main.py --invoice_path=data/invoices/invoice_1001.txt --no-llm
+.venv/bin/python main.py --invoice_dir=data/invoices --no-llm
+.venv/bin/streamlit run app.py
 ```
 
-Output should include structured logs and results.
+`--no-llm` uses the local parsers and rules. Leave it off when `XAI_API_KEY` is set in `.env` (see `.env.example`) and the same graph will call Grok for extraction, an inventory tool pass, and a critique. The rules still decide. A model can hold a payment. It cannot approve an invoice the rules rejected, and it cannot call the payment function.
 
-## Evaluation Criteria
+Python 3.9 and newer. `eval_type_backport` is what lets Pydantic read the modern type hints on 3.9.
 
-- **Functionality** — Does the system work end-to-end?
-- **Code Quality** — Clean, testable, well-structured code with error handling and observability
-- **Agentic Sophistication** — LLM integration, multi-agent flow, tool use, self-correction loops
-- **Shipping Mindset** — Valuable MVP delivered under ambiguity; scope ruthlessly cut where needed
-- **Presentation** — Clear translation of technical decisions to business impact
-- **Above/Beyond** - Have you made it your own? Implemented additional features that make the solution feel great? Expanded assumptions? Added to test cases?
-- **UI/UX** - Users will understand and enjoy using this system.
+## What one invoice does
 
-## Submission
+LangGraph runs nine steps. Each step keeps the fields it does not touch.
 
-Submit your solution as a link to a public GitHub repository — GitHub only (github.com).
+1. **Load** the file (PDF, text, JSON, CSV, or XML).
+2. **Extract** structured fields. Text and PDF can go through the model; JSON, CSV, and XML stay on the parser.
+3. **Check** the arithmetic. With a model key, a bad total is sent back for one more read.
+4. **Normalize** printed names (`Widget A`, `Gadget X`) onto catalog ids.
+5. **Validate** against SQLite. The model may call `lookup_inventory`. The findings themselves are computed in code.
+6. **Draft** a decision from those findings.
+7. **Critique** by recomputing the findings, then asking the model if a clean invoice should be held.
+8. **Pay** only on approve, through the mock ledger. A second success for the same invoice number is refused.
+9. **Record** the decision whether or not money moved.
+
+JSON audit logs go to `logs/`.
+
+## Sample folder
+
+`python main.py --invoice_dir=data/invoices --no-llm` clears the ledger and scores every file against the same stock snapshot (WidgetA 15, WidgetB 10, GadgetX 5, FakeItem 0).
+
+| Outcome | Files |
+|---|---|
+| Paid | 1001, 1004, 1006, 1011 PDF, 1012 PDF, 1015. **$29,115** total. |
+| Rejected | 1002 stock, 1003 fraud and zero stock, 1005 and 1007 and 1013 over stock (1013 and 1007 also fail the arithmetic), 1008 and 1016 unknown items, 1009 negative quantity |
+| Held | 1004 revision and the text twins of 1011 and 1012 (already on the ledger), 1010 rush price, 1014 euros |
+
+## Tests
+
+```bash
+.venv/bin/python -m pytest
+```

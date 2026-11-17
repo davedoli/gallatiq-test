@@ -81,7 +81,7 @@ if result:
                 for line in items
             ],
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
         )
     with right:
         st.subheader("Findings")
@@ -141,5 +141,5 @@ if batch:
             for state in batch
         ],
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
     )

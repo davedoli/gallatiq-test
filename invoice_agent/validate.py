@@ -195,6 +195,7 @@ def collect_findings(invoice: Invoice, raw_text: str, conn: sqlite3.Connection) 
 
     _flag_suspicious(invoice, raw_text, findings)
     _flag_duplicate(invoice, conn, findings)
+    findings.sort(key=_finding_rank)
     return findings
 
 
@@ -234,6 +235,26 @@ def prior_activity(conn: sqlite3.Connection, invoice_number: str) -> tuple[bool,
     return paid is not None, seen
 
 
+_FINDING_RANK = {
+    "suspicious_payment_request": 0,
+    "out_of_stock": 1,
+    "unknown_item": 1,
+    "insufficient_stock": 1,
+    "negative_quantity": 2,
+    "negative_total": 2,
+    "missing_vendor": 2,
+    "missing_line_items": 2,
+    "missing_total": 3,
+    "math_mismatch": 3,
+    "due_date_inconsistent": 4,
+}
+
+
+def _finding_rank(finding: Finding) -> tuple[int, int]:
+    severity = 0 if finding.severity == "error" else 1
+    return severity, _FINDING_RANK.get(finding.code, 5)
+
+
 def _qty(value: Decimal) -> str:
     if value == value.to_integral():
         return str(int(value))
@@ -248,7 +269,7 @@ def _flag_duplicate(invoice: Invoice, conn: sqlite3.Connection, findings: list[F
     if not paid and seen is None:
         return
     if paid:
-        detail = "a successful payment already on the ledger"
+        detail = "a successful payment on the ledger"
     else:
         source = Path(seen["source_path"]).name
         detail = f"an earlier {seen['decision']} decision from {source}"
