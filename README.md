@@ -16,7 +16,7 @@ python3 -m venv .venv
 .venv/bin/streamlit run app.py
 ```
 
-`--no-llm` uses the local parsers and rules. Leave it off when `XAI_API_KEY` is set in `.env` (see `.env.example`) and the same graph will call Grok for extraction, an inventory tool pass, and a critique. The rules still decide. A model can hold a payment. It cannot approve an invoice the rules rejected, and it cannot call the payment function.
+`--no-llm` uses the local parsers and rules. Otherwise, set `XAI_API_KEY`, `GEMINI_API_KEY`, or `OPENAI_API_KEY` in `.env` (see `.env.example`) to use Grok, Gemini, or OpenAI for extraction, an inventory tool pass, and a critique. If more than one key is set, the app selects them in that order. The rules still decide. A model can hold a payment. It cannot approve an invoice the rules rejected, and it cannot call the payment function.
 
 Python 3.9 and newer. `eval_type_backport` is what lets Pydantic read the modern type hints on 3.9.
 

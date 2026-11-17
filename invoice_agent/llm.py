@@ -70,6 +70,16 @@ def build_client() -> SupportsLLM | None:
             model=os.getenv("XAI_MODEL", "grok-3").strip() or "grok-3",
             base_url=os.getenv("XAI_BASE_URL", "https://api.x.ai/v1").strip(),
         )
+    gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if gemini_key:
+        return ChatClient(
+            api_key=gemini_key,
+            model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash",
+            base_url=os.getenv(
+                "GEMINI_BASE_URL",
+                "https://generativelanguage.googleapis.com/v1beta/openai/",
+            ).strip(),
+        )
     openai_key = os.getenv("OPENAI_API_KEY", "").strip()
     if openai_key:
         return ChatClient(
@@ -85,7 +95,7 @@ def client_available() -> bool:
 
 
 class ChatClient:
-    """OpenAI-compatible chat client. xAI's live API uses this shape."""
+    """OpenAI-compatible chat client used by supported model providers."""
 
     def __init__(self, api_key: str, model: str, base_url: str):
         from openai import OpenAI

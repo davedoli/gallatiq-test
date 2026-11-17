@@ -37,7 +37,10 @@ with st.sidebar:
         st.success("Ledger cleared.")
 
 if use_llm and build_client() is None:
-    st.error("No model key is set. Add XAI_API_KEY to a .env file, or turn the language model off to use the local parsers.")
+    st.error(
+        "No model key is set. Add XAI_API_KEY, GEMINI_API_KEY, or OPENAI_API_KEY "
+        "to a .env file, or turn the language model off to use the local parsers."
+    )
 
 run_clicked = st.button("Run this invoice", type="primary")
 if run_clicked:
