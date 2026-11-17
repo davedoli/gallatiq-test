@@ -2,7 +2,7 @@
 
 A local multi-agent desk that reads a supplier invoice, checks it against inventory, and either records a mock payment or stops with a written reason.
 
-Clean invoices under $10,000 are paid on a local ledger. Stock problems, bad math, unknown items, and anything that looks like fraud are rejected. Price changes, non-USD invoices, totals over $10,000 with no other defect, and a second copy of an invoice already on the ledger are held for a person.
+Clean invoices under $10,000 are paid on a local ledger. Stock problems, bad math, unknown items, figures that are not printed on the document, and anything that looks like fraud are rejected. Price changes, a discount still more than 10% under the catalog price, non-USD invoices, totals over $10,000 with no other defect, pressure to pay immediately, a missing invoice number, and a second copy of an invoice already on the ledger are held for a person. If a model was supposed to critique an approval and that call fails, the invoice is held.
 
 The original brief is in [CASE.md](CASE.md).
 
@@ -26,7 +26,7 @@ LangGraph runs nine steps. Each step keeps the fields it does not touch.
 
 1. **Load** the file (PDF, text, JSON, CSV, or XML).
 2. **Extract** structured fields. Text and PDF can go through the model; JSON, CSV, and XML stay on the parser.
-3. **Check** the arithmetic. With a model key, a bad total is sent back for one more read.
+3. **Check** the arithmetic and that the extracted vendor, invoice number, items, and amounts are printed on the document. With a model key, a bad total or a figure that is not on the page is sent back for one more read.
 4. **Normalize** printed names (`Widget A`, `Gadget X`) onto catalog ids.
 5. **Validate** against SQLite. The model may call `lookup_inventory`. The findings themselves are computed in code.
 6. **Draft** a decision from those findings.

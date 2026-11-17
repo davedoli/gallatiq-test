@@ -6,6 +6,8 @@ from invoice_agent.schemas import Finding, Invoice
 
 AUTO_PAY_LIMIT = Decimal("10000.00")
 PRICE_VARIANCE_LIMIT = Decimal("0.02")
+# A printed discount may sit a little under the catalog price. A deep cut still needs a person.
+DISCOUNT_VARIANCE_LIMIT = Decimal("0.10")
 
 
 def decide(findings: list[Finding]) -> str:

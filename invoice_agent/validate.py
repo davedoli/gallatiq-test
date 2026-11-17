@@ -6,12 +6,20 @@ from collections import defaultdict
 from decimal import Decimal
 from pathlib import Path
 
-from invoice_agent.policy import AUTO_PAY_LIMIT, PRICE_VARIANCE_LIMIT
+from invoice_agent.parse import fix_ocr, money
+from invoice_agent.policy import AUTO_PAY_LIMIT, DISCOUNT_VARIANCE_LIMIT, PRICE_VARIANCE_LIMIT
 from invoice_agent.schemas import Finding, Invoice
 from invoice_agent.tools import lookup_inventory
 
 MONEY_TOLERANCE = Decimal("0.05")
 PRESSURE = re.compile(r"urgent|wire transfer|pay immediately|avoid penalties", re.IGNORECASE)
+# A comma is a thousands separator in $5,000.00 and a field break in CSV "10,250.00".
+# Collect both readings so a printed price is recognized either way.
+_PLAIN_AMOUNT = re.compile(r"(?<![A-Za-z])-?\$?\s*-?\d+(?:\.\d+)?")
+_THOUSANDS_AMOUNT = re.compile(r"(?<![A-Za-z])-?\$?\s*-?\d{1,3}(?:,\d{3})+(?:\.\d+)?")
+_LABELED_TOTAL = re.compile(
+    r"(?i)(?<![A-Za-z])(?:grand\s+total|total\s+amount|total)\s*[:=>,]+\s*\$?\s*(-?[\d,]+(?:\.\d+)?)"
+)
 
 
 def line_extended(line) -> Decimal | None:
@@ -92,8 +100,71 @@ def audit_math(invoice: Invoice) -> list[Finding]:
     return findings
 
 
+def audit_source(invoice: Invoice, raw_text: str) -> list[Finding]:
+    """Reject an extraction whose payable fields are not on the document."""
+    findings: list[Finding] = []
+    printed = _printed_amounts(raw_text)
+    folded = _fold(fix_ocr(raw_text or ""))
+    _require_printed(invoice.total, "total", printed, findings, always=True)
+    _require_printed(invoice.subtotal, "subtotal", printed, findings)
+    _require_printed(invoice.tax_amount, "tax", printed, findings)
+    _require_printed(invoice.shipping, "shipping", printed, findings)
+    for line in invoice.line_items:
+        label = line.item or "a line"
+        _require_printed(line.unit_price, f"{label} unit price", printed, findings)
+        _require_printed(line.amount, f"{label} line amount", printed, findings)
+        if line.item and _fold(line.item) not in folded:
+            findings.append(
+                Finding(
+                    severity="error",
+                    code="extraction_mismatch",
+                    message=f"{line.item} is not printed on the document.",
+                )
+            )
+    vendor = (invoice.vendor or "").strip()
+    if vendor and _fold(vendor) not in folded:
+        findings.append(
+            Finding(
+                severity="error",
+                code="extraction_mismatch",
+                message=f"Vendor {vendor} is not printed on the document.",
+            )
+        )
+    number = (invoice.invoice_number or "").strip()
+    if number and _fold(number) not in folded:
+        findings.append(
+            Finding(
+                severity="error",
+                code="extraction_mismatch",
+                message=f"Invoice number {number} is not printed on the document.",
+            )
+        )
+    labeled = _labeled_totals(raw_text)
+    if invoice.total is not None and labeled and all(abs(invoice.total - value) > MONEY_TOLERANCE for value in labeled):
+        shown = ", ".join(f"{value:,.2f}" for value in labeled)
+        findings.append(
+            Finding(
+                severity="error",
+                code="extraction_mismatch",
+                message=(
+                    f"Extracted total {invoice.total:,.2f} does not match the printed total ({shown})."
+                ),
+            )
+        )
+    return findings
+
+
 def collect_findings(invoice: Invoice, raw_text: str, conn: sqlite3.Connection) -> list[Finding]:
     findings = audit_math(invoice)
+    findings.extend(audit_source(invoice, raw_text))
+    if not (invoice.invoice_number or "").strip():
+        findings.append(
+            Finding(
+                severity="warning",
+                code="missing_invoice_number",
+                message="The invoice number is missing, so a duplicate payment cannot be checked.",
+            )
+        )
     if not (invoice.vendor or "").strip():
         findings.append(Finding(severity="error", code="missing_vendor", message="The vendor name is missing."))
     if invoice.due_date is None and not invoice.due_date_note:
@@ -155,8 +226,6 @@ def collect_findings(invoice: Invoice, raw_text: str, conn: sqlite3.Connection) 
         for line in invoice.line_items:
             if line.unit_price is None:
                 continue
-            if line.note and re.search(r"discount", line.note, re.IGNORECASE):
-                continue
             info = lookup_inventory(conn, line.normalized_item or line.item)
             if not info["found"] or info["unit_price"] is None:
                 continue
@@ -164,6 +233,9 @@ def collect_findings(invoice: Invoice, raw_text: str, conn: sqlite3.Connection) 
             if catalog <= 0:
                 continue
             variance = abs(line.unit_price - catalog) / catalog
+            discount = bool(line.note and re.search(r"discount", line.note, re.IGNORECASE))
+            if discount and line.unit_price <= catalog and variance <= DISCOUNT_VARIANCE_LIMIT:
+                continue
             if variance > PRICE_VARIANCE_LIMIT:
                 findings.append(
                     Finding(
@@ -217,6 +289,14 @@ def _flag_suspicious(invoice: Invoice, raw_text: str, findings: list[Finding]) -
                 message=f"Payment looks suspicious because {' and '.join(bits)}.",
             )
         )
+    elif pressure:
+        findings.append(
+            Finding(
+                severity="warning",
+                code="payment_pressure",
+                message="The document pressures for immediate payment, so it needs a person before payment.",
+            )
+        )
 
 
 def prior_activity(conn: sqlite3.Connection, invoice_number: str) -> tuple[bool, sqlite3.Row | None]:
@@ -253,6 +333,44 @@ _FINDING_RANK = {
 def _finding_rank(finding: Finding) -> tuple[int, int]:
     severity = 0 if finding.severity == "error" else 1
     return severity, _FINDING_RANK.get(finding.code, 5)
+
+
+def _printed_amounts(text: str) -> set[Decimal]:
+    found: set[Decimal] = set()
+    cleaned = fix_ocr(text or "")
+    for pattern in (_PLAIN_AMOUNT, _THOUSANDS_AMOUNT):
+        for match in pattern.finditer(cleaned):
+            value = money(re.sub(r"\s+", "", match.group(0)))
+            if value is not None:
+                found.add(value)
+    return found
+
+
+def _labeled_totals(text: str) -> list[Decimal]:
+    totals: list[Decimal] = []
+    for match in _LABELED_TOTAL.finditer(fix_ocr(text or "")):
+        value = money(match.group(1))
+        if value is not None and value not in totals:
+            totals.append(value)
+    return totals
+
+
+def _require_printed(amount: Decimal | None, label: str, printed: set[Decimal], findings: list[Finding], always: bool = False) -> None:
+    if amount is None or (amount == 0 and not always):
+        return
+    if any(abs(amount - value) <= MONEY_TOLERANCE for value in printed):
+        return
+    findings.append(
+        Finding(
+            severity="error",
+            code="extraction_mismatch",
+            message=f"The extracted {label} {amount:,.2f} is not printed on the document.",
+        )
+    )
+
+
+def _fold(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", value.casefold())
 
 
 def _qty(value: Decimal) -> str:

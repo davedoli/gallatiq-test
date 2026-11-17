@@ -119,3 +119,175 @@ def test_model_can_hold_a_clean_invoice(tmp_path):
         reset_llm_client(token)
     assert state["decision"] == "needs_review"
     assert state["payment"] is None
+
+
+def test_failed_critique_holds_a_clean_invoice(tmp_path):
+    class Client:
+        def complete_json(self, system, user):
+            if "Schema keys" in system:
+                raise ValueError("use the parser")
+            raise RuntimeError("critique down")
+
+        def complete(self, messages, tools=None, json_mode=False):
+            return type("Msg", (), {"content": "On-hand stock covers the lines.", "tool_calls": None})()
+
+    token = set_llm_client(Client())
+    try:
+        state = run_path(SAMPLES / "invoice_1001.txt", db_path=tmp_path / "inventory.db", use_llm=True)
+    finally:
+        reset_llm_client(token)
+    assert state["decision"] == "needs_review"
+    assert "critique_unavailable" in _codes(state)
+    assert state["payment"] is None
+
+
+def test_rewritten_extraction_cannot_be_paid(tmp_path):
+    class Client:
+        def complete_json(self, system, user):
+            if "Schema keys" in system:
+                return {
+                    "invoice_number": "INV-1003",
+                    "vendor": "Widgets Inc.",
+                    "invoice_date": "2026-01-20",
+                    "due_date": "2026-02-20",
+                    "currency": "USD",
+                    "line_items": [{"item": "WidgetA", "quantity": 10, "unit_price": 250, "amount": 2500}],
+                    "subtotal": 2500,
+                    "tax_amount": 0,
+                    "total": 2500,
+                }
+            return {"recommended_decision": "approve", "rationale": "Looks clean."}
+
+        def complete(self, messages, tools=None, json_mode=False):
+            return type("Msg", (), {"content": "Stock covers the order.", "tool_calls": None})()
+
+    token = set_llm_client(Client())
+    try:
+        state = run_path(SAMPLES / "invoice_1003.txt", db_path=tmp_path / "inventory.db", use_llm=True)
+    finally:
+        reset_llm_client(token)
+    assert state["decision"] == "reject"
+    assert "extraction_mismatch" in _codes(state)
+    assert state["payment"] is None
+
+
+def test_pressure_missing_number_and_deep_discount_are_not_paid(tmp_path):
+    db = tmp_path / "inventory.db"
+    pressure = tmp_path / "pressure.txt"
+    pressure.write_text(
+        """INVOICE
+
+Vendor: Widgets Inc.
+Invoice Number: INV-9002
+Date: 2026-01-15
+Due Date: 2026-02-01
+
+Items:
+  WidgetA    qty: 2    unit price: $250.00
+
+Subtotal: $500.00
+Tax (0%): $0.00
+Total Amount: $500.00
+
+Payment Terms: Net 15
+Notes: URGENT - Pay immediately. Wire transfer preferred.
+""",
+        encoding="utf-8",
+    )
+    state = run_path(pressure, db_path=db, use_llm=False)
+    assert state["decision"] == "needs_review"
+    assert "payment_pressure" in _codes(state)
+    assert "suspicious_payment_request" not in _codes(state)
+    assert state["payment"] is None
+
+    unnumbered = tmp_path / "unnumbered.txt"
+    unnumbered.write_text(
+        """INVOICE
+
+Vendor: Widgets Inc.
+Date: 2026-01-15
+Due Date: 2026-02-01
+
+Items:
+  WidgetA    qty: 2    unit price: $250.00
+
+Subtotal: $500.00
+Tax (0%): $0.00
+Total Amount: $500.00
+
+Payment Terms: Net 15
+""",
+        encoding="utf-8",
+    )
+    state = run_path(unnumbered, db_path=db, use_llm=False)
+    assert state["decision"] == "needs_review"
+    assert "missing_invoice_number" in _codes(state)
+    assert state["payment"] is None
+
+    deep = tmp_path / "deep.json"
+    deep.write_text(
+        """{
+  "invoice_number": "INV-9003",
+  "vendor": "Widgets Inc.",
+  "date": "2026-01-15",
+  "due_date": "2026-02-01",
+  "line_items": [
+    {"item": "WidgetA", "quantity": 2, "unit_price": 100.00, "amount": 200.00, "note": "Volume discount"}
+  ],
+  "subtotal": 200.00,
+  "tax_amount": 0,
+  "total": 200.00,
+  "currency": "USD"
+}
+""",
+        encoding="utf-8",
+    )
+    state = run_path(deep, db_path=db, use_llm=False)
+    assert state["decision"] == "needs_review"
+    assert "price_variance" in _codes(state)
+    assert state["payment"] is None
+
+    modest = tmp_path / "modest.json"
+    modest.write_text(
+        """{
+  "invoice_number": "INV-9004",
+  "vendor": "Widgets Inc.",
+  "date": "2026-01-15",
+  "due_date": "2026-02-01",
+  "line_items": [
+    {"item": "WidgetA", "quantity": 2, "unit_price": 240.00, "amount": 480.00, "note": "Volume discount"}
+  ],
+  "subtotal": 480.00,
+  "tax_amount": 0,
+  "total": 480.00,
+  "currency": "USD"
+}
+""",
+        encoding="utf-8",
+    )
+    state = run_path(modest, db_path=db, use_llm=False)
+    assert state["decision"] == "approve"
+    assert state["payment"]["status"] == "success"
+
+    marked_up = tmp_path / "marked_up.json"
+    marked_up.write_text(
+        """{
+  "invoice_number": "INV-9005",
+  "vendor": "Widgets Inc.",
+  "date": "2026-01-15",
+  "due_date": "2026-02-01",
+  "line_items": [
+    {"item": "WidgetA", "quantity": 2, "unit_price": 300.00, "amount": 600.00, "note": "Volume discount"}
+  ],
+  "subtotal": 600.00,
+  "tax_amount": 0,
+  "total": 600.00,
+  "currency": "USD"
+}
+""",
+        encoding="utf-8",
+    )
+    state = run_path(marked_up, db_path=db, use_llm=False)
+    assert state["decision"] == "needs_review"
+    assert "price_variance" in _codes(state)
+    assert state["payment"] is None

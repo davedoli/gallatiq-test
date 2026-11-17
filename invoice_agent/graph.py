@@ -19,7 +19,7 @@ from invoice_agent.parse import fix_ocr, parse_document, read_source
 from invoice_agent.policy import apply_critique, decide, explain
 from invoice_agent.schemas import Finding, Invoice
 from invoice_agent.tools import submit_payment
-from invoice_agent.validate import audit_math, collect_findings
+from invoice_agent.validate import audit_math, audit_source, collect_findings
 from invoice_agent.normalize import canonical_item
 
 logger = logging.getLogger("invoice_agent")
@@ -101,8 +101,8 @@ def check(state: AgentState) -> dict:
     invoice = Invoice.model_validate(state["invoice"])
     issues = [
         finding.message
-        for finding in audit_math(invoice)
-        if finding.code in {"math_mismatch", "missing_total"}
+        for finding in audit_math(invoice) + audit_source(invoice, state.get("raw_text") or "")
+        if finding.code in {"math_mismatch", "missing_total", "extraction_mismatch"}
     ]
     retry = bool(
         issues
@@ -202,6 +202,16 @@ def critique(state: AgentState) -> dict:
         except Exception as exc:
             logger.warning("model critique skipped: %s", exc)
             notes.append(f"The model critique did not run ({exc.__class__.__name__}).")
+            if decision == "approve":
+                recomputed.append(
+                    Finding(
+                        severity="warning",
+                        code="critique_unavailable",
+                        message="The model critique did not finish, so the invoice is held for a person.",
+                    )
+                )
+                decision = decide(recomputed)
+                notes.append("The invoice was held because the critique did not finish.")
     else:
         notes.append("No model was configured, so the rules stood on their own.")
 
@@ -229,12 +239,20 @@ def pay(state: AgentState) -> dict:
     if state.get("decision") != "approve":
         return {"payment": None}
     invoice = Invoice.model_validate(state["invoice"])
-    if invoice.total is None or invoice.total <= 0 or not (invoice.vendor or "").strip():
+    payable = (
+        invoice.total is not None
+        and invoice.total > 0
+        and bool((invoice.vendor or "").strip())
+        and bool((invoice.invoice_number or "").strip())
+    )
+    if not payable:
         reason = state.get("decision_reason") or ""
         return {
             "decision": "reject",
-            "payment": {"status": "blocked", "reason": "missing vendor or non-positive total"},
-            "decision_reason": f"{reason} Payment blocked because the vendor or total is not payable.".strip(),
+            "payment": {"status": "blocked", "reason": "missing vendor, invoice number, or non-positive total"},
+            "decision_reason": (
+                f"{reason} Payment blocked because the vendor, invoice number, or total is not payable."
+            ).strip(),
             "trace": _trace(state, "payment blocked"),
         }
     stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
